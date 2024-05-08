@@ -22,9 +22,8 @@ async fn main() -> anyhow::Result<()> {
             println!("Initialized git directory")
         }
         Some(("cat-file", cat_file_matches)) => {
-            let blob_sha = cat_file_matches
-                .get_one::<String>("blob_sha")
-                .expect("blob_sha is required");
+            let blob_sha = cat_file_matches.get_one::<String>("blob_sha")
+                .expect("Blob SHA is required");
             if blob_sha.len() != 40 {
                 eprintln!("Invalid blob SHA: {}", blob_sha);
                 return Err(anyhow!("Invalid blob SHA: {}", blob_sha));
@@ -38,8 +37,7 @@ async fn main() -> anyhow::Result<()> {
             reader.read_until(0, &mut buf)?;
 
             let text = std::str::from_utf8(&buf[..buf.len() - 1])?;
-            let text = text.strip_prefix("blob ")
-                .ok_or(anyhow!("Invalid blob"))?;
+            let text = text.strip_prefix("blob ").ok_or(anyhow!("Invalid blob"))?;
             let size: usize = text.parse()?;
             buf.resize(size, 0);
             reader.read_exact(&mut buf)?;
@@ -48,26 +46,25 @@ async fn main() -> anyhow::Result<()> {
             print!("{}", content);
         }
         Some(("hash-object", hash_object_matches)) => {
-            let filename = hash_object_matches
-                .get_one::<String>("file")
-                .expect("file is required");
+            let filename = hash_object_matches.get_one::<String>("file")
+                .expect("File argument is required");
             let should_write = hash_object_matches.get_flag("write");
-            
+
             let mut input_file = fs::File::open(&filename)?;
             let size = input_file.metadata()?.len();
-            
+
             let mut buf = BytesMut::new();
             buf.write_str("blob ")?;
             buf.write_str(&size.to_string())?;
             buf.put_u8(0);
             let start_content = buf.len();
             buf.resize(start_content + size as usize, 0);
-            
+
             input_file.read_exact(&mut buf[start_content..])?;
-            
+
             let content = String::from_utf8_lossy(&buf[start_content..]);
             dbg!(content);
-            
+
             let mut hasher = sha1::Sha1::new();
             hasher.update(&buf);
             let blob_sha = hex::encode(hasher.finalize());
@@ -87,8 +84,52 @@ async fn main() -> anyhow::Result<()> {
                 encoder.write(&buf)?;
             }
         }
+        Some(("ls-tree", ls_tree_matches)) => {
+            let tree_sha = ls_tree_matches.get_one::<String>("tree_sha")
+                .expect("Tree SHA is required");
+            let name_only = ls_tree_matches.get_flag("name-only");
 
-        _ => { eprintln!("Invalid command, use --help."); }
+            let filename = filename_from_sha(&tree_sha)?;
+            let file = fs::File::open(filename)?;
+            let decoder = ZlibDecoder::new(file);
+            let mut buf_reader = BufReader::new(decoder);
+
+            let mut buf = Vec::new();
+            let read = buf_reader.read_until(0, &mut buf)?;
+            let str = std::str::from_utf8(&buf[..read - 1])?;
+            let str = str.strip_prefix("tree ").ok_or(anyhow!("Invalid tree"))?;
+            let size: usize = str.parse()?;
+
+            let mut left = size;
+            while left > 0 {
+                buf.clear();
+                let read = buf_reader.read_until(0, &mut buf)?;
+                let (mode, name) = std::str::from_utf8(&buf[..read - 1])?
+                    .split_once(' ')
+                    .ok_or(anyhow!("Invalid tree entry"))?;
+                let (mode, name) = (u32::from_str_radix(mode, 8)?, name.to_string());
+
+                buf.resize(20, 0);
+                buf_reader.read_exact(&mut buf)?;
+                let sha = hex::encode(&buf);
+
+                if name_only {
+                    println!("{}", name);
+                } else {
+                    if mode == 0o40000 {
+                        println!("{:06o} tree {} {}", mode, name, sha);
+                    } else {
+                        println!("{:06o} blob {} {}", mode, name, sha);
+                    }
+                }
+
+                left -= read + 20;
+            }
+        }
+
+        _ => {
+            eprintln!("Invalid command, use --help.");
+        }
     }
 
     Ok(())
@@ -99,10 +140,7 @@ fn get_matches() -> ArgMatches {
         .version("0.1.0")
         .author("xxorza")
         .about("A simple git implementation in Rust")
-        .subcommand(
-            Command::new("init")
-                .about("Initialize a new git repository")
-        )
+        .subcommand(Command::new("init").about("Initialize a new git repository"))
         .subcommand(
             Command::new("cat-file")
                 .about("Prints the contents of a git object")
@@ -122,11 +160,27 @@ fn get_matches() -> ArgMatches {
                         .short('w')
                         .action(ArgAction::SetTrue)
                         .help("Write the object into the object database"),
-                ).arg(
-                Arg::new("file")
-                    .value_name("FILE")
-                    .help("Read the object from the given file"),
-            )
+                )
+                .arg(
+                    Arg::new("file")
+                        .value_name("FILE")
+                        .help("Read the object from the given file"),
+                ),
+        )
+        .subcommand(
+            Command::new("ls-tree")
+                .about("List the contents of a tree object")
+                .arg(
+                    Arg::new("name-only")
+                        .long("name-only")
+                        .action(ArgAction::SetTrue)
+                        .help("Only show names of tree entries"),
+                )
+                .arg(
+                    Arg::new("tree_sha")
+                        .value_name("TREE_SHA")
+                        .help("The SHA of the tree to list"),
+                ),
         )
         .get_matches()
 }
