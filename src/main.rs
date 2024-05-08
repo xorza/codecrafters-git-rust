@@ -71,7 +71,7 @@ async fn main() -> anyhow::Result<()> {
             let mut hasher = sha1::Sha1::new();
             hasher.update(&buf);
             let blob_sha = hex::encode(hasher.finalize());
-            println!("File sha1: {}", blob_sha);
+            println!("{}", blob_sha);
 
             if should_write {
                 let directory = directory_from_sha(&blob_sha)?;
