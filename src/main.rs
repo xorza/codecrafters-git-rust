@@ -52,20 +52,24 @@ async fn main() -> anyhow::Result<()> {
                 .get_one::<String>("file")
                 .expect("file is required");
             let should_write = hash_object_matches.get_flag("write");
-
-            let mut buf = BytesMut::new();
-            buf.write_str("blob ")?;
+            
             let mut input_file = fs::File::open(&filename)?;
             let size = input_file.metadata()?.len();
-
+            
+            let mut buf = BytesMut::new();
+            buf.write_str("blob ")?;
             buf.write_str(&size.to_string())?;
             buf.put_u8(0);
             let start_content = buf.len();
-            buf.resize(buf.len() + size as usize, 0);
+            buf.resize(start_content + size as usize, 0);
+            
             input_file.read_exact(&mut buf[start_content..])?;
-
+            
+            let content = String::from_utf8_lossy(&buf[start_content..]);
+            dbg!(content);
+            
             let mut hasher = sha1::Sha1::new();
-            hasher.update(&buf[start_content..]);
+            hasher.update(&buf);
             let blob_sha = hex::encode(hasher.finalize());
             println!("File sha1: {}", blob_sha);
 
