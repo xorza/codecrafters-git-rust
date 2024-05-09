@@ -50,9 +50,9 @@ async fn main() -> anyhow::Result<()> {
             let filename = hash_object_matches.get_one::<String>("file")
                 .expect("File argument is required")
                 .as_str();
-            let should_write = hash_object_matches.get_flag("write");
+            let write_to_file = hash_object_matches.get_flag("write");
 
-            let blob_sha = hash_object(&filename.into(), should_write)?;
+            let blob_sha = hash_object(&filename.into(), write_to_file)?;
             println!("{}", blob_sha);
         }
         Some(("ls-tree", ls_tree_matches)) => {
@@ -102,6 +102,31 @@ async fn main() -> anyhow::Result<()> {
             let sha1 = write_tree(&".".into())?;
             println!("{}", sha1);
         },
+        Some(("commit-tree", commit_tree_matches)) => {
+            let tree_sha: Sha1Hash = commit_tree_matches.get_one::<String>("tree_sha")
+                .expect("Tree SHA is required")
+                .parse()?;
+            let parent: Option<Sha1Hash> = commit_tree_matches.get_one::<String>("parent")
+                .map(|s| s.parse().map(Some))
+                .transpose()
+                .map(|opt| opt.flatten())?;
+            let message = commit_tree_matches.get_one::<String>("message")
+                .expect("Message is required");
+
+            // println!("tree: {}, parent: {:?}, message: {}", tree_sha, parent, message);
+            let mut commit_buf = String::new();
+            writeln!(commit_buf, "tree {}", tree_sha)?;
+            if let Some(parent) = parent {
+                writeln!(commit_buf, "parent {}", parent)?;
+            }
+            writeln!(commit_buf, "author Noname <noreply@noname.com> 1709990458 +0200")?;
+            writeln!(commit_buf, "committer Noname <noreply@noname.com> 1709990458 +0200")?;
+            writeln!(commit_buf, "")?;
+            writeln!(commit_buf, "{}", message)?;
+
+            let sha1 = write_object("commit", commit_buf.as_bytes(), true)?;
+            println!("{}", sha1);
+        }
 
         _ => {
             eprintln!("Invalid command, use --help.");
@@ -111,27 +136,11 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn hash_object(filename: &PathBuf, should_write: bool) -> anyhow::Result<Sha1Hash> {
-    let mut input_file = fs::File::open(&filename)?;
-    let size = input_file.metadata()?.len();
+fn hash_object(filename: &PathBuf, write_to_file: bool) -> anyhow::Result<Sha1Hash> {
+    let buf = fs::read(filename)?;
+    let sha = write_object("blob", &buf, write_to_file)?;
 
-    let mut buf = BytesMut::new();
-    buf.write_str("blob ")?;
-    buf.write_str(&size.to_string())?;
-    buf.put_u8(0);
-    let start_content = buf.len();
-    buf.resize(start_content + size as usize, 0);
-
-    input_file.read_exact(&mut buf[start_content..])?;
-
-    let blob_sha: Sha1Hash = Sha1Hash::hash(&buf);
-
-    if should_write {
-        write_object(&buf, Some(blob_sha.clone()))?;
-        // println!("Written blob {} {}", blob_sha, filename.display());
-    }
-
-    Ok(blob_sha)
+    Ok(sha)
 }
 
 fn write_tree(path: &PathBuf) -> anyhow::Result<Sha1Hash> {
@@ -164,7 +173,7 @@ fn write_tree(path: &PathBuf) -> anyhow::Result<Sha1Hash> {
     }
 
     entries.sort_by(|a, b| a.1.cmp(&b.1));
-    
+
     let mut buf = BytesMut::new();
     for (mode, name, sha) in entries {
         buf.write_fmt(format_args!("{:o} {}", mode, name))?;
@@ -172,33 +181,34 @@ fn write_tree(path: &PathBuf) -> anyhow::Result<Sha1Hash> {
         buf.put_slice(sha.as_ref());
     }
     let buf = buf.freeze();
-    let mut object_buf = BytesMut::with_capacity(buf.len() + 32);
-    object_buf.write_fmt(format_args!("tree {}", buf.len()))?;
-    object_buf.put_u8(0);
-    object_buf.put_slice(&buf);
 
-    let sha1 = write_object(&object_buf, None)?;
-
-    // println!("Written tree {} {}", sha1, path.display());
-
+    let sha1 = write_object("tree", &buf, true)?;
     Ok(sha1)
 }
 
-fn write_object(buf: &[u8], sha1: Option<Sha1Hash>) -> anyhow::Result<Sha1Hash> {
-    let sha1 = sha1.unwrap_or_else(|| Sha1Hash::hash(&buf));
+fn write_object(kind: &str, content: &[u8], write_to_file: bool) -> anyhow::Result<Sha1Hash> {
+    let mut buf = BytesMut::new();
+    buf.write_fmt(format_args!("{} {}", kind, content.len()))?;
+    buf.put_u8(0);
+    buf.put_slice(content);
 
-    let directory = directory_from_sha(&sha1)?;
-    fs::create_dir_all(&directory)?;
+    let sha1 = Sha1Hash::hash(&buf);
 
-    let filename = filename_from_sha(&sha1)?;
-    let file = fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .open(filename)?;
-    let mut file = ZlibEncoder::new(file, flate2::Compression::default());
-    let mut file = file;
-    file.write(buf)?;
+    if write_to_file {
+        let directory = directory_from_sha(&sha1)?;
+        fs::create_dir_all(&directory)?;
+
+        let filename = filename_from_sha(&sha1)?;
+        let file = fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(filename)?;
+        let file = ZlibEncoder::new(file, flate2::Compression::default());
+
+        let mut file = file;
+        file.write(&buf)?;
+    }
 
     Ok(sha1)
 }
@@ -247,12 +257,36 @@ fn get_matches() -> ArgMatches {
                 .arg(
                     Arg::new("tree_sha")
                         .value_name("TREE_SHA")
+                        .required(true)
                         .help("The SHA of the tree to list"),
                 ),
         )
         .subcommand(
             Command::new("write-tree")
                 .about("Write a tree object from the current index")
+        )
+        .subcommand(
+            Command::new("commit-tree")
+                .about("Create a new commit object")
+                .arg(
+                    Arg::new("tree_sha")
+                        .value_name("TREE_SHA")
+                        .required(true)
+                        .help("The SHA of the tree to commit"),
+                )
+                .arg(
+                    Arg::new("parent")
+                        .short('p')
+                        .value_name("PARENT")
+                        .help("The SHA of the parent commit"),
+                )
+                .arg(
+                    Arg::new("message")
+                        .short('m')
+                        .value_name("MESSAGE")
+                        .required(true)
+                        .help("The commit message"),
+                ),
         )
         .get_matches()
 }
