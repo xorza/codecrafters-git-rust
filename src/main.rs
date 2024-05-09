@@ -152,7 +152,7 @@ fn write_tree(path: &PathBuf) -> anyhow::Result<Sha1Hash> {
         }
 
         let metadata = entry.metadata()?;
-        let mode = if metadata.is_dir() { 0o40000 } else { 0o100644 };
+        let mode: u32 = if metadata.is_dir() { 0o40000 } else { 0o100644 };
 
         let sha = if metadata.is_dir() {
             write_tree(&entry.path())?
@@ -163,10 +163,11 @@ fn write_tree(path: &PathBuf) -> anyhow::Result<Sha1Hash> {
         entries.push((mode, last_name, sha));
     }
 
+    entries.sort_by(|a, b| a.1.cmp(&b.1));
+    
     let mut buf = BytesMut::new();
     for (mode, name, sha) in entries {
-        buf.write_str(mode.to_string().as_str())?;
-        buf.write_str(&name)?;
+        buf.write_fmt(format_args!("{:o} {}", mode, name))?;
         buf.put_u8(0);
         buf.put_slice(sha.as_ref());
     }
@@ -196,6 +197,7 @@ fn write_object(buf: &[u8], sha1: Option<Sha1Hash>) -> anyhow::Result<Sha1Hash> 
         .truncate(true)
         .open(filename)?;
     let mut file = ZlibEncoder::new(file, flate2::Compression::default());
+    let mut file = file;
     file.write(buf)?;
 
     Ok(sha1)
