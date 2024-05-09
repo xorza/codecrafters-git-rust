@@ -128,7 +128,7 @@ fn hash_object(filename: &PathBuf, should_write: bool) -> anyhow::Result<Sha1Has
 
     if should_write {
         write_object(&buf, Some(blob_sha.clone()))?;
-        println!("Written blob {} {}", blob_sha, filename.display());
+        // println!("Written blob {} {}", blob_sha, filename.display());
     }
 
     Ok(blob_sha)
@@ -178,7 +178,7 @@ fn write_tree(path: &PathBuf) -> anyhow::Result<Sha1Hash> {
 
     let sha1 = write_object(&object_buf, None)?;
 
-    println!("Written tree {} {}", sha1, path.display());
+    // println!("Written tree {} {}", sha1, path.display());
 
     Ok(sha1)
 }
